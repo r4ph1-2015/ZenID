@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: zenid
-Version: 1.0.2
+Version: 1.1.1
 Summary: A Highly Secure Watermark Tool made to verify the author for text,image and audio
 Author: Pixeldaguy
 Classifier: Programming Language :: Python :: 3
@@ -35,6 +35,6 @@ Run the python script to use ZenID in your Terminal.
 
 3. In your Terminal, enter ```ZenID``` and run it.
 
-Current Version: 1.0.1
+Current Version: 1.1.1
 
 
