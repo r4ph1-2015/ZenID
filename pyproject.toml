@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zenid"
-version = "1.0.1"
+version = "1.0.2"
 authors = [
   { name="Pixeldaguy" }
 ]
@@ -13,7 +13,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: ARR",
     "Operating System :: OS Independent",
 ]
 dependencies = [
