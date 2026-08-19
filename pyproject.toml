@@ -9,7 +9,7 @@ authors = [
   { name="Pixeldaguy" }
 ]
 description = "A Highly Secure Watermark Tool made to verify the author for text,image and audio"
-readline = "README.md"
+readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
