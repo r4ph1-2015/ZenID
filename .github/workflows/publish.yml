@@ -1,0 +1,149 @@
+name: Publish Python Package
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────
+  # 1. Build sdist + wheel and extract version
+  # ─────────────────────────────────────────────
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      prerelease: ${{ steps.get_version.outputs.prerelease }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Extract version from pyproject.toml
+        id: get_version
+        run: |
+          VERSION=$(python -c "import tomllib; f=open('pyproject.toml','rb'); d=tomllib.load(f); print(d['project']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+          # Mark as pre-release if version contains 'a' (alpha), e.g. 1.0.0a1
+          if echo "$VERSION" | grep -qP '(\d+a\d*|a\d+)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Pre-release detected"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check dist contents
+        run: python -m twine check dist/*
+
+      - name: Upload built artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  # ─────────────────────────────────────────────
+  # 2. Publish to TestPyPI — automatic, no gate.
+  #
+  #    Add a secret named TESTPYPI_API_TOKEN to your repo:
+  #    Repo → Settings → Secrets → Actions → New repository secret
+  #    Get the token from: https://test.pypi.org/manage/account/token/
+  # ─────────────────────────────────────────────
+  publish-testpypi:
+    name: Publish → TestPyPI (automatic)
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          password: ${{ secrets.TESTPYPI_API_TOKEN }}
+          skip-existing: true
+          verbose: true
+
+  # ─────────────────────────────────────────────
+  # 3. Create GitHub Release — automatic, no gate.
+  #    Marked as pre-release if version contains 'a'.
+  #    Approval for PyPI comes after this.
+  # ─────────────────────────────────────────────
+  github-release:
+    name: Create GitHub Release
+    needs: [build, publish-testpypi]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: v${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
+          files: dist/*
+
+  # ─────────────────────────────────────────────
+  # 4. Publish to PyPI — pauses for manual approval.
+  #    Runs after GitHub Release is created.
+  #
+  #    Two things needed:
+  #    A) Add a secret named PYPI_API_TOKEN to your repo.
+  #       Get the token from: https://pypi.org/manage/account/token/
+  #    B) Create a "production" environment in repo Settings →
+  #       Environments, and add yourself as a Required Reviewer.
+  #       That is what triggers the approval email/notification.
+  # ─────────────────────────────────────────────
+  publish-pypi:
+    name: Publish → PyPI (requires approval)
+    needs: [build, github-release]
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+      url: https://pypi.org/p/${{ github.event.repository.name }}
+
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
+          verbose: true

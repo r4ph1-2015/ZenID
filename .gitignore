@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+input/
+output/
+*.jpg
+*.png
+*.wav
+*.txt

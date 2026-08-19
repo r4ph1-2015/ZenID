@@ -1,0 +1,28 @@
+name: Mirror to GitLab and Codeberg
+
+on:
+  push:
+    branches:
+      - main   # change to master if needed
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mirror to GitLab
+        run: |
+          git remote add gitlab https://oauth2:${{ secrets.GITLAB_TOKEN }}@gitlab.com/pixelated-labs/ZenID.git
+          git push gitlab main --force
+          git push gitlab --tags --force
+
+      - name: Mirror to Codeberg
+        run: |
+          git remote add codeberg https://${{ secrets.CODEBERG_USERNAME }}:${{ secrets.CODEBERG_TOKEN }}@codeberg.org/${{ secrets.CODEBERG_USERNAME }}/Zenid.git
+          git push codeberg main --force
+          git push codeberg --tags --force
