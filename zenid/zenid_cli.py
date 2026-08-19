@@ -11,16 +11,16 @@ import sys
 
 # Dynamic import handling for package mode vs standalone execution
 try:
-    from .zenid_core import embed_image as embed_img, detect_image as detect_img
+    from .zenid_core import embed as embed_img, detect as detect_img
     from .zenid_text import embed_text, detect_text
     from .zenid_audio import embed_audio, detect_audio
 except ImportError:
     try:
-        from zenid.zenid_core import embed_image as embed_img, detect_image as detect_img
+        from zenid.zenid_core import embed as embed_img, detect as detect_img
         from zenid.zenid_text import embed_text, detect_text
         from zenid.zenid_audio import embed_audio, detect_audio
     except ImportError:
-        from zenid_core import embed_image as embed_img, detect_image as detect_img
+        from zenid_core import embed as embed_img, detect as detect_img
         from zenid_text import embed_text, detect_text
         from zenid_audio import embed_audio, detect_audio
 

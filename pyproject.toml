@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zenid"
-version = "1.0.2"
+version = "1.1"
 authors = [
   { name="Pixeldaguy" }
 ]
@@ -24,4 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-zenid = "zenid.cli:main"
+zenid = "zenid.zenid_cli:main"
+
+[tool.setuptools.packages.find]
+include = ["zenid*"]
