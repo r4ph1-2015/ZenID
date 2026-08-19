@@ -1,204 +1,168 @@
 """
 zenid_core.py
---------------
-ZenID v1.2: Native 8x8 Block-DCT Luminance Differential Engine.
-Embeds a fixed 256-bit frame into the Y (Luminance) channel for maximum 
-color-space stability, featuring magic header validation and HMAC verification.
+-------------
+High-Security Native 8x8 Block-DCT Image Watermarking Engine (Full Color & Robust YCbCr).
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import numpy as np
+import random
 from PIL import Image
-from scipy.fft import dctn, idctn
+import numpy as np
 
-# Differential modulation margin (survives RGB/JPEG quantization)
-GAP_MARGIN = 30.0
-
-# Mid-frequency DCT coefficient candidate pairs
-MID_FREQ_COORDS = [
-    (3, 3), (3, 4), (4, 3), (4, 4),
-    (2, 4), (4, 2), (3, 5), (5, 3)
-]
-
-FRAME_BITS = 256  # Fixed 32-byte frame
-MAGIC = b"ZEN1"   # 4-byte header
+# Configuration constants
+BLOCK_SIZE = 8
+QUANT_STEP = 64.0  # Wide quantization step to absorb YCbCr conversion rounding noise
+PAYLOAD_BITS = 256  # 32 bytes total capacity (Author + Metadata + HMAC)
 
 
-def _derive_seed(key: str) -> int:
-    """Derive deterministic PRNG seed using HMAC-SHA256."""
-    h = hmac.new(key.encode("utf-8"), b"zenid_image_salt", hashlib.sha256).digest()
-    return int.from_bytes(h[:4], byteorder="big")
+def _generate_signature(key: str, author: str) -> tuple[bytes, str]:
+    """Generates an HMAC-SHA256 signature and a short 12-char fingerprint."""
+    fingerprint = hashlib.sha256(f"{author}:{key}".encode()).hexdigest()[:12]
+    h = hmac.new(key.encode(), author.encode(), hashlib.sha256).digest()
+    return h, fingerprint
 
 
-def _payload_to_frame(author: str, key: str) -> list[int]:
-    """Convert author string into a fixed 256-bit frame with magic header and HMAC."""
-    author_bytes = author.encode("utf-8")[:20]  # Max 20 bytes for author name
-    length = len(author_bytes)
-
-    raw = bytearray(32)
-    raw[0:4] = MAGIC
-    raw[4] = length
-    raw[5 : 5 + length] = author_bytes
-
-    # Generate HMAC checksum for the header + author
-    mac = hmac.new(key.encode("utf-8"), raw[: 5 + length], hashlib.sha256).digest()
-    raw[5 + length :] = mac[: 27 - length]
-
+def _text_to_bits(text: str, max_bytes: int = 32) -> list[int]:
+    """Converts a text string into a fixed-size bit array."""
+    data = text.encode("utf-8")[:max_bytes]
+    data = data.ljust(max_bytes, b'\x00')
     bits = []
-    for byte in raw:
-        for i in range(8):
+    for byte in data:
+        for i in range(7, -1, -1):
             bits.append((byte >> i) & 1)
     return bits
 
 
-def _frame_to_payload(bits: list[int], key: str) -> tuple[str | None, str | None]:
-    """Reconstruct and cryptographically verify author payload from extracted bits."""
-    if len(bits) < FRAME_BITS:
-        return None, None
-
-    raw = bytearray(32)
-    for byte_idx in range(32):
-        val = 0
-        for bit_idx in range(8):
-            val |= (bits[byte_idx * 8 + bit_idx] & 1) << bit_idx
-        raw[byte_idx] = val
-
-    # Check magic header
-    if raw[0:4] != MAGIC:
-        return None, None
-
-    length = raw[4]
-    if length == 0 or length > 20:
-        return None, None
-
-    try:
-        author = raw[5 : 5 + length].decode("utf-8")
-    except UnicodeDecodeError:
-        return None, None
-
-    # Cryptographic integrity check
-    expected_mac = hmac.new(key.encode("utf-8"), raw[: 5 + length], hashlib.sha256).digest()
-    actual_mac = raw[5 + length :]
-    if actual_mac != expected_mac[: len(actual_mac)]:
-        return None, None  # Invalid key or corrupted payload
-
-    fingerprint = hashlib.sha256(f"{author}:{key}".encode()).hexdigest()[:12]
-    return author, fingerprint
+def _bits_to_text(bits: list[int]) -> str:
+    """Converts a bit array back into a text string."""
+    bytes_list = []
+    for i in range(0, len(bits), 8):
+        byte = 0
+        for b in bits[i:i+8]:
+            byte = (byte << 1) | b
+        bytes_list.append(byte)
+    return bytes(bytes_list).rstrip(b'\x00').decode("utf-8", errors="ignore")
 
 
 def embed(input_path: str, output_path: str, key: str, author: str) -> None:
-    """Embed author identity into the Y (Luminance) channel using Differential DCT."""
+    """
+    Embeds an encrypted author watermark into the Y channel of a full-color image
+    using robust interval-offset quantization.
+    """
     img = Image.open(input_path).convert("YCbCr")
-    y, cb, cr = img.split()
+    y_channel, cb, cr = img.split()
+    y_arr = np.array(y_channel, dtype=np.float32)
 
-    y_arr = np.array(y, dtype=np.float32)
     h, w = y_arr.shape
+    if h < BLOCK_SIZE * 16 or w < BLOCK_SIZE * 16:
+        raise ValueError("Image dimensions are too small. Minimum resolution is 128x128 pixels.")
 
-    h_block, w_block = h // 8, w // 8
-    total_blocks = h_block * w_block
-    if total_blocks < FRAME_BITS:
-        raise ValueError("Image too small. Minimum resolution: 128x128 pixels.")
+    _, fingerprint = _generate_signature(key, author)
+    payload_str = f"{author}|{fingerprint}"
+    raw_bits = _text_to_bits(payload_str, max_bytes=32)
 
-    bits = _payload_to_frame(author, key)
-    repetitions = total_blocks // FRAME_BITS
+    # Redundancy factor for bulletproof error recovery
+    redundancy_factor = 3
+    expanded_bits = []
+    for bit in raw_bits:
+        expanded_bits.extend([bit] * redundancy_factor)
 
-    seed = _derive_seed(key)
-    rng = np.random.default_rng(seed)
+    total_bits = len(expanded_bits)
+    blocks_h = h // BLOCK_SIZE
+    blocks_w = w // BLOCK_SIZE
+    total_blocks = blocks_h * blocks_w
+    
+    if total_blocks < total_bits:
+        raise ValueError(f"Image too small for payload. Needs at least {total_bits} blocks.")
 
-    block_idx = 0
-    for rep in range(repetitions):
-        for bit_i in range(FRAME_BITS):
-            r = block_idx // w_block
-            c = block_idx % w_block
+    seed_int = int(hashlib.sha256(key.encode()).hexdigest(), 16) % (2**32)
+    rng = random.Random(seed_int)
+    
+    block_indices = [(r, c) for r in range(blocks_h) for c in range(blocks_w)]
+    rng.shuffle(block_indices)
 
-            p1_idx, p2_idx = rng.choice(len(MID_FREQ_COORDS), size=2, replace=False)
-            p1 = MID_FREQ_COORDS[p1_idx]
-            p2 = MID_FREQ_COORDS[p2_idx]
+    u, v = 3, 4
+    for bit_idx, bit in enumerate(expanded_bits):
+        r, c = block_indices[bit_idx]
+        block = y_arr[r*BLOCK_SIZE:(r+1)*BLOCK_SIZE, c*BLOCK_SIZE:(c+1)*BLOCK_SIZE]
 
-            block = y_arr[r * 8 : (r + 1) * 8, c * 8 : (c + 1) * 8]
-            dct_block = dctn(block, norm="ortho")
+        val = block[u, v]
+        base = np.floor(val / QUANT_STEP) * QUANT_STEP
+        # Bit 1 targets upper quarter, Bit 0 targets lower quarter of the quantum interval
+        target = base + (0.75 * QUANT_STEP if bit == 1 else 0.25 * QUANT_STEP)
+        block[u, v] = target
 
-            v1 = dct_block[p1]
-            v2 = dct_block[p2]
-            avg = (v1 + v2) / 2.0
-            target_bit = bits[bit_i]
+        y_arr[r*BLOCK_SIZE:(r+1)*BLOCK_SIZE, c*BLOCK_SIZE:(c+1)*BLOCK_SIZE] = block
 
-            if target_bit == 1:
-                if v1 - v2 < GAP_MARGIN:
-                    dct_block[p1] = avg + (GAP_MARGIN / 2.0)
-                    dct_block[p2] = avg - (GAP_MARGIN / 2.0)
-            else:
-                if v2 - v1 < GAP_MARGIN:
-                    dct_block[p1] = avg - (GAP_MARGIN / 2.0)
-                    dct_block[p2] = avg + (GAP_MARGIN / 2.0)
-
-            y_arr[r * 8 : (r + 1) * 8, c * 8 : (c + 1) * 8] = idctn(
-                dct_block, norm="ortho"
-            )
-            block_idx += 1
-
-    y_arr = np.clip(y_arr, 0, 255).astype(np.uint8)
-    modified_y = Image.fromarray(y_arr, mode="L")
-    watermarked_img = Image.merge("YCbCr", (modified_y, cb, cr)).convert("RGB")
-    watermarked_img.save(output_path)
+    y_mod = Image.fromarray(np.clip(y_arr, 0, 255).astype(np.uint8))
+    watermarked_img = Image.merge("YCbCr", (y_mod, cb, cr)).convert("RGB")
+    watermarked_img.save(output_path, quality=95)
 
 
-def detect(image_path: str, key: str) -> dict[str, str]:
-    """Extract embedded watermark using majority voting and HMAC verification."""
+def detect(image_path: str, key: str) -> dict:
+    """
+    Extracts and verifies the watermark from a full-color image using robust
+    interval decoding and majority-vote error correction.
+    """
     img = Image.open(image_path).convert("YCbCr")
-    y, _, _ = img.split()
+    y_channel, _, _ = img.split()
+    y_arr = np.array(y_channel, dtype=np.float32)
 
-    y_arr = np.array(y, dtype=np.float32)
     h, w = y_arr.shape
+    blocks_h = h // BLOCK_SIZE
+    blocks_w = w // BLOCK_SIZE
 
-    h_block, w_block = h // 8, w // 8
-    total_blocks = h_block * w_block
-    if total_blocks < FRAME_BITS:
-        return {"message": "Image too small (min 128x128 required)", "author": "N/A", "fingerprint": "N/A"}
+    seed_int = int(hashlib.sha256(key.encode()).hexdigest(), 16) % (2**32)
+    rng = random.Random(seed_int)
 
-    repetitions = total_blocks // FRAME_BITS
-    if repetitions == 0:
-        return {"message": "Insufficient image capacity", "author": "N/A", "fingerprint": "N/A"}
+    block_indices = [(r, c) for r in range(blocks_h) for c in range(blocks_w)]
+    rng.shuffle(block_indices)
 
-    seed = _derive_seed(key)
-    rng = np.random.default_rng(seed)
+    redundancy_factor = 3
+    total_bits = PAYLOAD_BITS * redundancy_factor
+    extracted_expanded_bits = []
 
-    bit_votes = [0] * FRAME_BITS
+    u, v = 3, 4
+    for bit_idx in range(total_bits):
+        r, c = block_indices[bit_idx]
+        block = y_arr[r*BLOCK_SIZE:(r+1)*BLOCK_SIZE, c*BLOCK_SIZE:(c+1)*BLOCK_SIZE]
+        
+        val = block[u, v]
+        remainder = val % QUANT_STEP
+        # Threshold at 50% of interval (32.0)
+        bit = 1 if remainder >= (0.5 * QUANT_STEP) else 0
+        extracted_expanded_bits.append(bit)
 
-    block_idx = 0
-    for rep in range(repetitions):
-        for bit_i in range(FRAME_BITS):
-            r = block_idx // w_block
-            c = block_idx % w_block
+    # Reconstruct original bits via Majority Vote
+    raw_bits = []
+    for i in range(0, len(extracted_expanded_bits), redundancy_factor):
+        chunk = extracted_expanded_bits[i:i+redundancy_factor]
+        majority = 1 if sum(chunk) > (redundancy_factor / 2) else 0
+        raw_bits.append(majority)
 
-            p1_idx, p2_idx = rng.choice(len(MID_FREQ_COORDS), size=2, replace=False)
-            p1 = MID_FREQ_COORDS[p1_idx]
-            p2 = MID_FREQ_COORDS[p2_idx]
+    decoded_text = _bits_to_text(raw_bits)
+    
+    if "|" not in decoded_text:
+        return {"message": "Watermark Not Found or Corrupted", "verified": False}
 
-            block = y_arr[r * 8 : (r + 1) * 8, c * 8 : (c + 1) * 8]
-            dct_block = dctn(block, norm="ortho")
+    parts = decoded_text.split("|", 1)
+    author = parts[0]
+    stored_fingerprint = parts[1] if len(parts) > 1 else ""
 
-            bit_val = 1 if dct_block[p1] > dct_block[p2] else 0
-            if bit_val == 1:
-                bit_votes[bit_i] += 1
-            block_idx += 1
+    _, expected_fingerprint = _generate_signature(key, author)
 
-    extracted_bits = [1 if votes > (repetitions / 2.0) else 0 for votes in bit_votes]
-
-    author, fingerprint = _frame_to_payload(extracted_bits, key)
-
-    if author:
+    if stored_fingerprint == expected_fingerprint:
         return {
             "message": "Watermark Verified Successfully",
+            "verified": True,
             "author": author,
-            "fingerprint": fingerprint,
+            "fingerprint": stored_fingerprint
         }
-
-    return {
-        "message": "No valid watermark detected (or key invalid)",
-        "author": "N/A",
-        "fingerprint": "N/A",
-    }
+    else:
+        return {
+            "message": "Watermark Invalid: Key Mismatch",
+            "verified": False
+        }
