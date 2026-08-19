@@ -18,6 +18,6 @@ Run the python script to use ZenID in your Terminal.
 
 3. In your Terminal, enter ```ZenID``` and run it.
 
-Current Version: 1.0.1
+Current Version: 1.1.1
 
 
